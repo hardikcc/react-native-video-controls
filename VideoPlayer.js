@@ -79,7 +79,7 @@ export default class VideoPlayer extends Component {
       volumeTrackWidth: 0,
       volumeFillWidth: 0,
       seekerFillWidth: 0,
-      showControls: this.props.showOnStart,
+      showControls: false, // Start hidden to avoid initial layout issues
       volumePosition: 0,
       seekerPosition: 0,
       volumeOffset: 0,
@@ -97,6 +97,9 @@ export default class VideoPlayer extends Component {
       iconURL: '',
       iconLeftPosition: 0,
       //
+      // Safe area insets - will be set after layout stabilizes
+      safeAreaTop: 0,
+      safeAreaBottom: 0,
     };
 
     /**
@@ -169,15 +172,15 @@ export default class VideoPlayer extends Component {
     /**
      * Various animations
      */
-    const initialValue = this.props.showOnStart ? 1 : 0;
+    const initialValue = 0; // Always start hidden
 
     this.animations = {
       bottomControl: {
-        marginBottom: new Animated.Value(0),
+        marginBottom: new Animated.Value(-100), // Start off-screen
         opacity: new Animated.Value(initialValue),
       },
       topControl: {
-        marginTop: new Animated.Value(0),
+        marginTop: new Animated.Value(-100), // Start off-screen
         opacity: new Animated.Value(initialValue),
       },
       video: {
@@ -205,10 +208,18 @@ export default class VideoPlayer extends Component {
   }
 
   componentDidUpdate = prevProps => {
-    const {isFullscreen, videoResolution} = this.props;
+    const {isFullscreen, videoResolution, controlSafeAreaInsets} = this.props;
 
     if (prevProps.isFullscreen !== isFullscreen) {
       this.setState({isFullscreen});
+      
+      // Update safe area insets when fullscreen state changes
+      if (controlSafeAreaInsets) {
+        this.setState({
+          safeAreaTop: controlSafeAreaInsets.top || 0,
+          safeAreaBottom: controlSafeAreaInsets.bottom || 0,
+        });
+      }
     }
 
     if (prevProps.videoResolution !== videoResolution) {
@@ -422,6 +433,12 @@ export default class VideoPlayer extends Component {
     // console.log('layout event', layoutEvent.nativeEvent.layout);
     let state = this.state;
     state.width = layoutEvent.nativeEvent.layout.width;
+    
+    // Calculate safe area after layout is ready
+    const insets = this.props.controlSafeAreaInsets || {};
+    state.safeAreaTop = insets.top || 0;
+    state.safeAreaBottom = insets.bottom || 0;
+    
     this.setState(state);
   }
 
@@ -469,6 +486,7 @@ export default class VideoPlayer extends Component {
    * screen so they're not interactable
    */
   hideControlAnimation() {
+    const { safeAreaTop, safeAreaBottom } = this.state;
     Animated.parallel([
       Animated.timing(this.animations.topControl.opacity, {
         toValue: 0,
@@ -476,7 +494,7 @@ export default class VideoPlayer extends Component {
         useNativeDriver: false,
       }),
       Animated.timing(this.animations.topControl.marginTop, {
-        toValue: -100,
+        toValue: -100 + safeAreaTop,
         duration: this.props.controlAnimationTiming,
         useNativeDriver: false,
       }),
@@ -486,7 +504,7 @@ export default class VideoPlayer extends Component {
         useNativeDriver: false,
       }),
       Animated.timing(this.animations.bottomControl.marginBottom, {
-        toValue: -100,
+        toValue: -100 - safeAreaBottom,
         duration: this.props.controlAnimationTiming,
         useNativeDriver: false,
       }),
@@ -499,6 +517,7 @@ export default class VideoPlayer extends Component {
    * fade in.
    */
   showControlAnimation() {
+    const { safeAreaTop, safeAreaBottom } = this.state;
     Animated.parallel([
       Animated.timing(this.animations.topControl.opacity, {
         toValue: 1,
@@ -506,7 +525,7 @@ export default class VideoPlayer extends Component {
         duration: this.props.controlAnimationTiming,
       }),
       Animated.timing(this.animations.topControl.marginTop, {
-        toValue: 0,
+        toValue: safeAreaTop,
         useNativeDriver: false,
         duration: this.props.controlAnimationTiming,
       }),
@@ -516,7 +535,7 @@ export default class VideoPlayer extends Component {
         duration: this.props.controlAnimationTiming,
       }),
       Animated.timing(this.animations.bottomControl.marginBottom, {
-        toValue: 0,
+        toValue: safeAreaBottom,
         useNativeDriver: false,
         duration: this.props.controlAnimationTiming,
       }),
@@ -652,9 +671,31 @@ export default class VideoPlayer extends Component {
     if (state.isFullscreen) {
       typeof this.events.onEnterFullscreen === 'function' &&
         this.events.onEnterFullscreen();
+      
+      // Hide controls when entering fullscreen on Android to avoid safe area issues
+      if (Platform.OS === 'android' && state.showControls) {
+        state.showControls = false;
+        this.clearControlTimeout();
+        this.setState(state);
+        this.hideControlAnimation();
+        typeof this.events.onHideControls === 'function' &&
+          this.events.onHideControls();
+        return;
+      }
     } else {
       typeof this.events.onExitFullscreen === 'function' &&
         this.events.onExitFullscreen();
+      
+      // Hide controls when exiting fullscreen on Android to allow safe area recalculation
+      if (Platform.OS === 'android' && state.showControls) {
+        state.showControls = false;
+        this.clearControlTimeout();
+        this.setState(state);
+        this.hideControlAnimation();
+        typeof this.events.onHideControls === 'function' &&
+          this.events.onHideControls();
+        return;
+      }
     }
 
     this.setState(state);
@@ -1009,6 +1050,8 @@ export default class VideoPlayer extends Component {
     this.state.screenOrientation = width > height ? 'landscape' : 'portrait';
     //
     this.setState(state);
+    
+    // Remove the initial animation delay - controls are now hidden by default
   }
 
   /**
@@ -1236,21 +1279,21 @@ export default class VideoPlayer extends Component {
           source={require('./assets/img/top-vignette.png')}
           style={[styles.controls.column]}
           imageStyle={[styles.controls.vignette]}>
-          <SafeAreaView style={styles.controls.topControlGroup}>
+          <Animated.View
+            style={[
+              styles.controls.topControlGroup,
+              {
+                opacity: this.animations.topControl.opacity,
+                marginTop: this.animations.topControl.marginTop,
+              },
+            ]}>
             {backControl}
-            <Animated.View
-              style={[
-                styles.controls.pullRight,
-                {
-                  opacity: this.animations.topControl.opacity,
-                  marginTop: this.animations.topControl.marginTop,
-                },
-              ]}>
+            <View style={styles.controls.pullRight}>
               {googleCastControl}
               {volumeControl}
               {fullscreenControl}
-            </Animated.View>
-          </SafeAreaView>
+            </View>
+          </Animated.View>
         </ImageBackground>
       </View>
     );
@@ -1373,16 +1416,16 @@ export default class VideoPlayer extends Component {
           style={[styles.controls.column]}
           imageStyle={[styles.controls.vignette]}>
           {seekbarControl}
-          <SafeAreaView
+          <View
             style={[styles.controls.row, styles.controls.bottomControlGroup]}>
-            <SafeAreaView style={[styles.controls.leftBottomControlGroup]}>
+            <View style={[styles.controls.leftBottomControlGroup]}>
               {playPauseControl}
               {rateControl}
               {videoResolutionsControl}
-            </SafeAreaView>
+            </View>
             {this.renderTitle()}
             {timerControl}
-          </SafeAreaView>
+          </View>
         </ImageBackground>
       </Animated.View>
     );
